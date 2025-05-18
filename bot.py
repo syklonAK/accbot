@@ -779,7 +779,7 @@ async def show_filtered_report(update: Update, context: ContextTypes.DEFAULT_TYP
                         FROM transactions 
                         ORDER BY date DESC''')
         
-        transactions = c.fetchall()
+    transactions = c.fetchall()
 
     if not transactions:
         await update.message.reply_text(
@@ -1086,7 +1086,6 @@ async def clear_debtor_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Clear debtors table
             c.execute('DELETE FROM debtors')
             conn.commit()
-            
         await update.message.reply_text(
             f"{EMOJIS['success']} لیست بدهکاران با موفقیت پاک شد.",
             reply_markup=get_main_menu_keyboard()
