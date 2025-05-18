@@ -1,8 +1,8 @@
 import os
 import logging
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from dotenv import load_dotenv
 import sqlite3
 
@@ -32,85 +32,77 @@ def init_db():
 # Main menu keyboard
 def get_main_menu_keyboard():
     keyboard = [
-        [InlineKeyboardButton("Record Income", callback_data='income')],
-        [InlineKeyboardButton("Record Expense", callback_data='expense')],
-        [InlineKeyboardButton("View Report", callback_data='report')],
-        [InlineKeyboardButton("Edit Transaction", callback_data='edit')]
+        [KeyboardButton("ثبت درآمد")],
+        [KeyboardButton("ثبت هزینه")],
+        [KeyboardButton("گزارش تراکنش‌ها")],
+        [KeyboardButton("ویرایش تراکنش")]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message with the main menu when the command /start is issued."""
     await update.message.reply_text(
-        'Welcome to your Accounting Bot! Please choose an option:',
+        'به ربات حسابداری خوش آمدید! لطفاً یک گزینه را انتخاب کنید:',
         reply_markup=get_main_menu_keyboard()
     )
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button presses."""
-    query = update.callback_query
-    await query.answer()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming messages."""
+    text = update.message.text
 
-    if query.data == 'income':
+    if text == "ثبت درآمد":
         context.user_data['waiting_for'] = 'income_amount'
-        await query.message.reply_text('Please enter the income amount:')
+        await update.message.reply_text('لطفاً مبلغ درآمد را وارد کنید:')
     
-    elif query.data == 'expense':
+    elif text == "ثبت هزینه":
         context.user_data['waiting_for'] = 'expense_amount'
-        await query.message.reply_text('Please enter the expense amount:')
+        await update.message.reply_text('لطفاً مبلغ هزینه را وارد کنید:')
     
-    elif query.data == 'report':
+    elif text == "گزارش تراکنش‌ها":
         await show_report(update, context)
     
-    elif query.data == 'edit':
+    elif text == "ویرایش تراکنش":
         await show_edit_menu(update, context)
-
-async def handle_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle amount input for income/expense."""
-    if 'waiting_for' not in context.user_data:
-        return
-
-    try:
-        amount = float(update.message.text)
-        if amount <= 0:
-            await update.message.reply_text('Please enter a positive amount.')
-            return
-
-        transaction_type = 'income' if context.user_data['waiting_for'] == 'income_amount' else 'expense'
-        
-        # Store the amount and ask for description
-        context.user_data['amount'] = amount
-        context.user_data['waiting_for'] = f'{transaction_type}_description'
-        
-        await update.message.reply_text('Please enter a description for this transaction:')
     
-    except ValueError:
-        await update.message.reply_text('Please enter a valid number.')
+    elif 'waiting_for' in context.user_data:
+        if 'amount' not in context.user_data:
+            try:
+                amount = float(text)
+                if amount <= 0:
+                    await update.message.reply_text('لطفاً یک مبلغ مثبت وارد کنید.')
+                    return
 
-async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle description input and save the transaction."""
-    if 'waiting_for' not in context.user_data or 'amount' not in context.user_data:
-        return
+                transaction_type = 'income' if context.user_data['waiting_for'] == 'income_amount' else 'expense'
+                
+                # Store the amount and ask for description
+                context.user_data['amount'] = amount
+                context.user_data['waiting_for'] = f'{transaction_type}_description'
+                
+                await update.message.reply_text('لطفاً توضیحات این تراکنش را وارد کنید:')
+            
+            except ValueError:
+                await update.message.reply_text('لطفاً یک عدد معتبر وارد کنید.')
+        
+        else:
+            description = text
+            amount = context.user_data['amount']
+            transaction_type = 'income' if 'income' in context.user_data['waiting_for'] else 'expense'
 
-    description = update.message.text
-    amount = context.user_data['amount']
-    transaction_type = 'income' if 'income' in context.user_data['waiting_for'] else 'expense'
+            # Save to database
+            conn = sqlite3.connect('accounting.db')
+            c = conn.cursor()
+            c.execute('INSERT INTO transactions (type, amount, description) VALUES (?, ?, ?)',
+                      (transaction_type, amount, description))
+            conn.commit()
+            conn.close()
 
-    # Save to database
-    conn = sqlite3.connect('accounting.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO transactions (type, amount, description) VALUES (?, ?, ?)',
-              (transaction_type, amount, description))
-    conn.commit()
-    conn.close()
+            # Clear user data
+            context.user_data.clear()
 
-    # Clear user data
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        f'{transaction_type.capitalize()} of {amount} recorded successfully!',
-        reply_markup=get_main_menu_keyboard()
-    )
+            await update.message.reply_text(
+                f'تراکنش {transaction_type} به مبلغ {amount} با موفقیت ثبت شد!',
+                reply_markup=get_main_menu_keyboard()
+            )
 
 async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show transaction report."""
@@ -121,17 +113,18 @@ async def show_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not transactions:
-        await update.callback_query.message.reply_text(
-            'No transactions found.',
+        await update.message.reply_text(
+            'هیچ تراکنشی یافت نشد.',
             reply_markup=get_main_menu_keyboard()
         )
         return
 
-    report = "Last 10 transactions:\n\n"
+    report = "۱۰ تراکنش آخر:\n\n"
     for t in transactions:
-        report += f"{t[0].capitalize()}: {t[1]} - {t[2]} ({t[3]})\n"
+        type_text = "درآمد" if t[0] == "income" else "هزینه"
+        report += f"{type_text}: {t[1]} - {t[2]} ({t[3]})\n"
 
-    await update.callback_query.message.reply_text(
+    await update.message.reply_text(
         report,
         reply_markup=get_main_menu_keyboard()
     )
@@ -145,25 +138,20 @@ async def show_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not transactions:
-        await update.callback_query.message.reply_text(
-            'No transactions to edit.',
+        await update.message.reply_text(
+            'هیچ تراکنشی برای ویرایش وجود ندارد.',
             reply_markup=get_main_menu_keyboard()
         )
         return
 
-    keyboard = []
+    report = "انتخاب تراکنش برای ویرایش:\n\n"
     for t in transactions:
-        keyboard.append([InlineKeyboardButton(
-            f"{t[1].capitalize()}: {t[2]} - {t[3]}",
-            callback_data=f'edit_{t[0]}'
-        )])
+        type_text = "درآمد" if t[1] == "income" else "هزینه"
+        report += f"{t[0]}. {type_text}: {t[2]} - {t[3]}\n"
 
-    keyboard.append([InlineKeyboardButton("Back to Main Menu", callback_data='main_menu')])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.callback_query.message.reply_text(
-        'Select a transaction to edit:',
-        reply_markup=reply_markup
+    await update.message.reply_text(
+        report,
+        reply_markup=get_main_menu_keyboard()
     )
 
 def main():
@@ -176,9 +164,7 @@ def main():
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_amount))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start the Bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
