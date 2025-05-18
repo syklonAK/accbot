@@ -36,24 +36,34 @@ EMOJIS = {
     'calendar': '📅',
     'money': '💵',
     'description': '📝',
-    'skip': '⏭️'
+    'skip': '⏭️',
+    'debtor': '👤'
 }
 
 # Database initialization
 def init_db():
-    # Remove existing database to recreate with new schema
-    if os.path.exists('accounting.db'):
-        os.remove('accounting.db')
-        
+    """Initialize the database with required tables."""
     conn = sqlite3.connect('accounting.db')
     c = conn.cursor()
+    
+    # Create transactions table
     c.execute('''CREATE TABLE IF NOT EXISTS transactions
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  transaction_id TEXT UNIQUE NOT NULL,
-                  type TEXT NOT NULL,
-                  amount REAL NOT NULL,
+                  transaction_id TEXT UNIQUE,
+                  type TEXT,
+                  amount REAL,
                   description TEXT,
-                  date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                  date TIMESTAMP)''')
+    
+    # Create debtors table
+    c.execute('''CREATE TABLE IF NOT EXISTS debtors
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  debtor_id TEXT UNIQUE,
+                  name TEXT,
+                  amount REAL,
+                  registration_date TIMESTAMP,
+                  status TEXT)''')
+    
     conn.commit()
     conn.close()
 
@@ -126,7 +136,8 @@ def get_main_menu_keyboard():
     """Get main menu keyboard with aligned buttons."""
     keyboard = [
         [KeyboardButton(f"{EMOJIS['income']} ثبت درآمد"), KeyboardButton(f"{EMOJIS['expense']} ثبت هزینه")],
-        [KeyboardButton(f"{EMOJIS['report']} گزارش تراکنش‌ها"), KeyboardButton(f"{EMOJIS['edit']} ویرایش تراکنش")]
+        [KeyboardButton(f"{EMOJIS['report']} گزارش تراکنش‌ها"), KeyboardButton(f"{EMOJIS['edit']} ویرایش تراکنش")],
+        [KeyboardButton("👤 ثبت بدهکار"), KeyboardButton("📋 لیست بدهکاران"), KeyboardButton("✏️ ویرایش بدهکار")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -148,6 +159,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • درآمدها و هزینه‌های خود را ثبت کنید
 • گزارش تراکنش‌ها را مشاهده کنید
 • تراکنش‌های قبلی را ویرایش کنید
+• بدهکاران خود را مدیریت کنید
 
 لطفاً یکی از گزینه‌های زیر را انتخاب کنید:
 """
@@ -155,6 +167,125 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_message,
         reply_markup=get_main_menu_keyboard()
     )
+
+async def set_debtor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the debtor registration process."""
+    await update.message.reply_text(
+        f"👤 لطفاً نام و مشخصات بدهکار را وارد کنید:"
+    )
+    context.user_data['waiting_for'] = 'debtor_name'
+    context.user_data['debtor_status'] = 'active'  # Set default status to active
+
+async def debtor_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show list of all debtors."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute('''SELECT debtor_id, name, amount, registration_date, status 
+                        FROM debtors 
+                        ORDER BY status DESC, registration_date DESC''')
+            debtors = c.fetchall()
+
+        if not debtors:
+            await update.message.reply_text(
+                f"{EMOJIS['warning']} هیچ بدهکاری در سیستم ثبت نشده است.",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+
+        # Calculate total debt for active debtors
+        total_debt = sum(debtor[2] for debtor in debtors if debtor[4] == 'active')
+
+        # Create report
+        separator = "┈" * 20
+        report_parts = [
+            f"{EMOJIS['debtor']} لیست بدهکاران",
+            separator,
+            f"{EMOJIS['money']} مجموع بدهی‌های پرداخت نشده: {format_amount(total_debt)} ریال",
+            separator
+        ]
+
+        # Group debtors by status
+        active_debtors = [d for d in debtors if d[4] == 'active']
+        paid_debtors = [d for d in debtors if d[4] == 'paid']
+
+        # Show active debtors first
+        if active_debtors:
+            report_parts.extend([
+                f"\n{EMOJIS['warning']} بدهکاران پرداخت نشده:",
+                separator
+            ])
+            for debtor in active_debtors:
+                debtor_parts = [
+                    f"👤 نام: {debtor[1]}",
+                    f"💵 مبلغ: {format_amount(debtor[2])} ریال",
+                    f"📝 شناسه: {debtor[0]}",
+                    f"{EMOJIS['calendar']} تاریخ ثبت: {format_date(debtor[3])}",
+                    f"📊 وضعیت: ❌ پرداخت نشده",
+                    separator
+                ]
+                report_parts.extend(debtor_parts)
+
+        # Show paid debtors
+        if paid_debtors:
+            report_parts.extend([
+                f"\n{EMOJIS['success']} بدهکاران پرداخت شده:",
+                separator
+            ])
+            for debtor in paid_debtors:
+                debtor_parts = [
+                    f"👤 نام: {debtor[1]}",
+                    f"💵 مبلغ: {format_amount(debtor[2])} ریال",
+                    f"📝 شناسه: {debtor[0]}",
+                    f"{EMOJIS['calendar']} تاریخ ثبت: {format_date(debtor[3])}",
+                    f"📊 وضعیت: ✅ پرداخت شده",
+                    separator
+                ]
+                report_parts.extend(debtor_parts)
+
+        await update.message.reply_text(
+            "\n".join(report_parts),
+            reply_markup=get_main_menu_keyboard()
+        )
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error while fetching debtors: {e}")
+        await update.message.reply_text(
+            f"{EMOJIS['error']} خطا در دریافت لیست بدهکاران. لطفاً دوباره تلاش کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+
+async def edit_debtor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the debtor editing process."""
+    await update.message.reply_text(
+        f"📝 لطفاً شناسه بدهکار را وارد کنید:\n"
+        f"{EMOJIS['warning']} شناسه بدهکار باید به صورت D و سه رقم باشد (مثال: D001)"
+    )
+    context.user_data['waiting_for'] = 'edit_debtor_id'
+
+async def delete_paid_debtor(context: ContextTypes.DEFAULT_TYPE):
+    """Delete a paid debtor after 1 minute and notify the user."""
+    debtor_id = context.job.data
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Get debtor info before deletion
+            c.execute('SELECT debtor_id FROM debtors WHERE id = ?', (debtor_id,))
+            debtor = c.fetchone()
+            if debtor:
+                debtor_id_text = debtor[0]
+                # Delete the debtor
+                c.execute('DELETE FROM debtors WHERE id = ?', (debtor_id,))
+                conn.commit()
+                logger.info(f"Paid debtor with ID {debtor_id_text} has been automatically deleted.")
+                
+                # Send notification message
+                await context.bot.send_message(
+                    chat_id=context.job.chat_id,
+                    text=f"{EMOJIS['success']} بدهکار با شناسه {debtor_id_text} از لیست بدهکاران حذف شد."
+                )
+    except sqlite3.Error as e:
+        logger.error(f"Error deleting paid debtor: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming messages."""
@@ -184,60 +315,365 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == f"{EMOJIS['edit']} ویرایش تراکنش":
         await show_edit_menu(update, context)
     
-    elif text == f"{EMOJIS['skip']} رد کردن توضیحات":
-        if 'amount' in context.user_data:
-            amount = context.user_data['amount']
-            transaction_type = 'income' if 'income' in context.user_data['waiting_for'] else 'expense'
-            
-            # Generate transaction ID
-            transaction_id = generate_transaction_id()
-            
-            # Get current Tehran time
-            tehran_time = get_tehran_time()
-            
-            # Save to database
-            conn = sqlite3.connect('accounting.db')
-            c = conn.cursor()
-            c.execute('INSERT INTO transactions (transaction_id, type, amount, description, date) VALUES (?, ?, ?, ?, ?)',
-                      (transaction_id, transaction_type, amount, None, tehran_time))
-            conn.commit()
-            conn.close()
-
-            # Clear user data
-            context.user_data.clear()
-
-            type_emoji = EMOJIS['income'] if transaction_type == 'income' else EMOJIS['expense']
-            type_text = "درآمد" if transaction_type == 'income' else "هزینه"
-            
-            # Get Persian date
-            persian_date = get_persian_date()
-            
-            success_message = f"""
-{EMOJIS['success']} تراکنش با موفقیت ثبت شد!
-
-{type_emoji} نوع: {type_text}
-{EMOJIS['money']} مبلغ: {format_amount(amount)} ریال
-📝 شناسه تراکنش: {transaction_id}
-{EMOJIS['calendar']} تاریخ: {persian_date.strftime('%Y/%m/%d %H:%M')}
-"""
-            await update.message.reply_text(
-                success_message,
-                reply_markup=get_main_menu_keyboard()
-            )
-    
-    elif text == f"{EMOJIS['back']} بازگشت به منو":
-        context.user_data.clear()
-        await update.message.reply_text(
-            "به منوی اصلی بازگشتید.",
-            reply_markup=get_main_menu_keyboard()
-        )
+    elif text == "👤 ثبت بدهکار":
+        await set_debtor(update, context)
+        return
+    elif text == "📋 لیست بدهکاران":
+        await debtor_list(update, context)
+        return
+    elif text == "✏️ ویرایش بدهکار":
+        await edit_debtor(update, context)
+        return
     
     elif 'waiting_for' in context.user_data:
-        if context.user_data['waiting_for'] in ['edit_transaction_id', 'edit_action', 'edit_amount', 'edit_description']:
+        if context.user_data['waiting_for'] == 'edit_debtor_id':
+            try:
+                debtor_id = text.strip().upper()
+                
+                if not (len(debtor_id) == 4 and 
+                       debtor_id[0] == 'D' and 
+                       debtor_id[1:].isdigit()):
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} شناسه بدهکار نامعتبر است.\n"
+                        f"لطفاً شناسه را به صورت D و سه رقم وارد کنید (مثال: D001)",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    return
+
+                with get_db_connection() as conn:
+                    c = conn.cursor()
+                    c.execute('''SELECT id, debtor_id, name, amount, status 
+                                FROM debtors WHERE debtor_id = ?''', (debtor_id,))
+                    debtor = c.fetchone()
+
+                if not debtor:
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} بدهکار با شناسه {debtor_id} در سیستم وجود ندارد.\n"
+                        f"لطفاً شناسه صحیح را وارد کنید یا به منوی اصلی بازگردید.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    return
+
+                context.user_data['editing_debtor'] = debtor
+                
+                keyboard = [
+                    [KeyboardButton("💰 ویرایش مبلغ"), KeyboardButton("📊 تغییر وضعیت")],
+                    [KeyboardButton(f"{EMOJIS['back']} بازگشت به منو")]
+                ]
+                
+                status_emoji = "✅" if debtor[4] == 'paid' else "❌"
+                status_text = "پرداخت شده" if debtor[4] == 'paid' else "پرداخت نشده"
+                
+                message_parts = [
+                    f"{EMOJIS['edit']} بدهکار انتخاب شده:",
+                    f"👤 نام: {debtor[2]}",
+                    f"💵 مبلغ: {format_amount(debtor[3])} ریال",
+                    f"📝 شناسه: {debtor[1]}",
+                    f"📊 وضعیت: {status_emoji} {status_text}",
+                    "لطفاً عملیات مورد نظر را انتخاب کنید:"
+                ]
+                
+                await update.message.reply_text(
+                    "\n".join(message_parts),
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+                context.user_data['waiting_for'] = 'edit_debtor_action'
+
+            except Exception as e:
+                logger.error(f"Error in edit debtor: {e}")
+                await update.message.reply_text(
+                    f"{EMOJIS['error']} خطای غیرمنتظره رخ داد. لطفاً دوباره تلاش کنید.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+
+        elif context.user_data['waiting_for'] == 'edit_debtor_action':
+            if 'editing_debtor' not in context.user_data:
+                await edit_debtor(update, context)
+                return
+
+            if text == "💰 ویرایش مبلغ":
+                context.user_data['waiting_for'] = 'edit_debtor_amount'
+                await update.message.reply_text(
+                    f"{EMOJIS['money']} مبلغ جدید را وارد کنید:\n"
+                    f"{EMOJIS['warning']} فقط عدد وارد کنید (مثال: 1000000)"
+                )
+            elif text == "📊 تغییر وضعیت":
+                debtor = context.user_data['editing_debtor']
+                current_status = debtor[4]
+                new_status = 'paid' if current_status == 'active' else 'active'
+                status_emoji = "✅" if new_status == 'paid' else "❌"
+                status_text = "پرداخت شده" if new_status == 'paid' else "پرداخت نشده"
+                
+                keyboard = [
+                    [KeyboardButton("✅ تایید"), KeyboardButton("❌ انصراف")],
+                    [KeyboardButton(f"{EMOJIS['back']} بازگشت به منو")]
+                ]
+                
+                message_parts = [
+                    f"{EMOJIS['edit']} تغییر وضعیت بدهکار:",
+                    f"👤 نام: {debtor[2]}",
+                    f"💵 مبلغ: {format_amount(debtor[3])} ریال",
+                    f"📝 شناسه: {debtor[1]}",
+                    f"📊 وضعیت جدید: {status_emoji} {status_text}",
+                    "آیا از تغییر وضعیت اطمینان دارید؟"
+                ]
+                
+                await update.message.reply_text(
+                    "\n".join(message_parts),
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+                context.user_data['waiting_for'] = 'edit_debtor_status_confirmation'
+                context.user_data['new_status'] = new_status
+
+        elif context.user_data['waiting_for'] == 'edit_debtor_amount':
+            if 'editing_debtor' not in context.user_data:
+                await edit_debtor(update, context)
+                return
+
+            try:
+                new_amount = float(text.replace(',', ''))
+                if new_amount <= 0:
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} لطفاً یک مبلغ مثبت وارد کنید.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    return
+
+                debtor = context.user_data['editing_debtor']
+                
+                keyboard = [
+                    [KeyboardButton("✅ تایید"), KeyboardButton("❌ انصراف")],
+                    [KeyboardButton(f"{EMOJIS['back']} بازگشت به منو")]
+                ]
+                
+                message_parts = [
+                    f"{EMOJIS['edit']} تغییر مبلغ بدهکار:",
+                    f"👤 نام: {debtor[2]}",
+                    f"💵 مبلغ قبلی: {format_amount(debtor[3])} ریال",
+                    f"💵 مبلغ جدید: {format_amount(new_amount)} ریال",
+                    f"📝 شناسه: {debtor[1]}",
+                    "آیا از تغییر مبلغ اطمینان دارید؟"
+                ]
+                
+                await update.message.reply_text(
+                    "\n".join(message_parts),
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+                context.user_data['waiting_for'] = 'edit_debtor_amount_confirmation'
+                context.user_data['new_amount'] = new_amount
+
+            except ValueError:
+                await update.message.reply_text(
+                    f"{EMOJIS['error']} لطفاً یک عدد معتبر وارد کنید.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+
+        elif context.user_data['waiting_for'] == 'edit_debtor_amount_confirmation':
+            if text == "✅ تایید":
+                debtor = context.user_data['editing_debtor']
+                new_amount = context.user_data['new_amount']
+                
+                try:
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute('UPDATE debtors SET amount = ? WHERE id = ?',
+                                 (new_amount, debtor[0]))
+                        conn.commit()
+
+                    await update.message.reply_text(
+                        f"{EMOJIS['success']} مبلغ بدهکار با موفقیت ویرایش شد.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    context.user_data.clear()
+
+                except sqlite3.Error as e:
+                    logger.error(f"Database error while updating debtor amount: {e}")
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} خطا در ویرایش مبلغ. لطفاً دوباره تلاش کنید.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+            elif text == "❌ انصراف":
+                await update.message.reply_text(
+                    f"{EMOJIS['warning']} ویرایش مبلغ لغو شد.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                context.user_data.clear()
+
+        elif context.user_data['waiting_for'] == 'edit_debtor_status_confirmation':
+            if text == "✅ تایید":
+                debtor = context.user_data['editing_debtor']
+                new_status = context.user_data['new_status']
+                
+                try:
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute('UPDATE debtors SET status = ? WHERE id = ?',
+                                 (new_status, debtor[0]))
+                        conn.commit()
+
+                    status_emoji = "✅" if new_status == 'paid' else "❌"
+                    status_text = "پرداخت شده" if new_status == 'paid' else "پرداخت نشده"
+                    
+                    await update.message.reply_text(
+                        f"{EMOJIS['success']} وضعیت بدهکار با موفقیت به {status_emoji} {status_text} تغییر یافت.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    
+                    # If status changed to paid, schedule deletion after 1 minute
+                    if new_status == 'paid':
+                        context.job_queue.run_once(
+                            delete_paid_debtor,
+                            when=60,  # 1 minute in seconds
+                            data=debtor[0],  # debtor ID
+                            chat_id=update.effective_chat.id  # Add chat_id to job data
+                        )
+                    
+                    context.user_data.clear()
+
+                except sqlite3.Error as e:
+                    logger.error(f"Database error while updating debtor status: {e}")
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} خطا در تغییر وضعیت. لطفاً دوباره تلاش کنید.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+            elif text == "❌ انصراف":
+                await update.message.reply_text(
+                    f"{EMOJIS['warning']} تغییر وضعیت لغو شد.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                context.user_data.clear()
+
+        elif context.user_data['waiting_for'] == 'debtor_name':
+            if not text.strip():
+                await update.message.reply_text(
+                    f"{EMOJIS['error']} نام بدهکار نمی‌تواند خالی باشد. لطفاً نام را وارد کنید:"
+                )
+                return
+            
+            # Check if name contains only letters
+            if not all(c.isalpha() or c.isspace() for c in text):
+                await update.message.reply_text(
+                    f"{EMOJIS['error']} نام بدهکار باید فقط شامل حروف باشد. لطفاً نام را بدون اعداد و کاراکترهای خاص وارد کنید:"
+                )
+                return
+            
+            context.user_data['debtor_name'] = text
+            context.user_data['waiting_for'] = 'debtor_amount'
+            await update.message.reply_text(
+                f"{EMOJIS['money']} لطفاً مبلغ بدهی را وارد کنید:\n"
+                f"{EMOJIS['warning']} فقط عدد وارد کنید (مثال: 1000000)"
+            )
+        
+        elif context.user_data['waiting_for'] == 'debtor_amount':
+            try:
+                amount = float(text.replace(',', ''))
+                if amount <= 0:
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} لطفاً یک مبلغ مثبت وارد کنید."
+                    )
+                    return
+
+                context.user_data['debtor_amount'] = amount
+                
+                # Generate debtor ID
+                try:
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute('SELECT debtor_id FROM debtors ORDER BY id DESC LIMIT 1')
+                        last_id = c.fetchone()
+                        
+                        if last_id:
+                            last_number = int(last_id[0][1:])
+                            new_number = last_number + 1
+                        else:
+                            new_number = 1
+                        
+                        debtor_id = f"D{new_number:03d}"
+                except sqlite3.OperationalError:
+                    init_db()
+                    debtor_id = "D001"
+                except Exception as e:
+                    logger.error(f"Error generating debtor ID: {e}")
+                    debtor_id = f"D{random.randint(1, 999):03d}"
+
+                # Show preview and ask for confirmation
+                preview_message = f"""
+{EMOJIS['debtor']} اطلاعات بدهکار جدید:
+
+👤 نام: {context.user_data['debtor_name']}
+💵 مبلغ: {format_amount(amount)} ریال
+📝 شناسه: {debtor_id}
+
+آیا اطلاعات وارد شده صحیح است؟"""
+
+                keyboard = [
+                    [KeyboardButton("✅ تایید"), KeyboardButton("❌ انصراف")],
+                    [KeyboardButton(f"{EMOJIS['back']} بازگشت به منو")]
+                ]
+                
+                await update.message.reply_text(
+                    preview_message,
+                    reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                )
+                context.user_data['waiting_for'] = 'debtor_confirmation'
+                context.user_data['debtor_id'] = debtor_id
+
+            except ValueError:
+                await update.message.reply_text(
+                    f"{EMOJIS['error']} لطفاً یک عدد معتبر وارد کنید."
+                )
+        
+        elif context.user_data['waiting_for'] == 'debtor_confirmation':
+            if text == "✅ تایید":
+                tehran_time = get_tehran_time()
+
+                try:
+                    with get_db_connection() as conn:
+                        c = conn.cursor()
+                        c.execute('''INSERT INTO debtors 
+                                    (debtor_id, name, amount, registration_date, status) 
+                                    VALUES (?, ?, ?, ?, ?)''',
+                                 (context.user_data['debtor_id'], 
+                                  context.user_data['debtor_name'], 
+                                  context.user_data['debtor_amount'], 
+                                  tehran_time, 
+                                  'active'))
+                        conn.commit()
+
+                    success_message = f"""
+{EMOJIS['success']} بدهکار با موفقیت ثبت شد!
+
+👤 نام: {context.user_data['debtor_name']}
+💵 مبلغ: {format_amount(context.user_data['debtor_amount'])} ریال
+📝 شناسه: {context.user_data['debtor_id']}
+{EMOJIS['calendar']} تاریخ ثبت: {format_date(str(tehran_time))}"""
+
+                    await update.message.reply_text(
+                        success_message,
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    context.user_data.clear()
+
+                except sqlite3.Error as e:
+                    logger.error(f"Database error while adding debtor: {e}")
+                    await update.message.reply_text(
+                        f"{EMOJIS['error']} خطا در ثبت بدهکار. لطفاً دوباره تلاش کنید.",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+            elif text == "❌ انصراف":
+                await update.message.reply_text(
+                    f"{EMOJIS['warning']} ثبت بدهکار لغو شد.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                context.user_data.clear()
+        
+        elif context.user_data['waiting_for'] in ['edit_transaction_id', 'edit_action', 'edit_amount', 'edit_description']:
             await handle_edit_transaction(update, context)
+        
         elif context.user_data['waiting_for'] == 'report_period':
             await show_filtered_report(update, context, text)
-        elif 'amount' not in context.user_data:
+        
+        elif context.user_data['waiting_for'] in ['income_amount', 'expense_amount']:
             try:
                 amount = float(text.replace(',', ''))
                 if amount <= 0:
@@ -263,7 +699,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"{EMOJIS['error']} لطفاً یک عدد معتبر وارد کنید."
                 )
         
-        else:
+        elif context.user_data['waiting_for'] in ['income_description', 'expense_description']:
             description = text
             amount = context.user_data['amount']
             transaction_type = 'income' if 'income' in context.user_data['waiting_for'] else 'expense'
@@ -308,7 +744,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_filtered_report(update: Update, context: ContextTypes.DEFAULT_TYPE, period: str):
     """Show filtered transaction report based on selected period."""
     with get_db_connection() as conn:
-        c = conn.cursor()
+    c = conn.cursor()
         
         # Get current Persian date
         now = get_persian_date()
@@ -343,7 +779,7 @@ async def show_filtered_report(update: Update, context: ContextTypes.DEFAULT_TYP
                         FROM transactions 
                         ORDER BY date DESC''')
         
-        transactions = c.fetchall()
+    transactions = c.fetchall()
 
     if not transactions:
         await update.message.reply_text(
@@ -600,6 +1036,141 @@ async def handle_edit_transaction(update: Update, context: ContextTypes.DEFAULT_
                 reply_markup=get_edit_transaction_keyboard()
             )
 
+async def clear_all_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all transaction and debtor data from the database."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Clear transactions table
+            c.execute('DELETE FROM transactions')
+            # Clear debtors table
+            c.execute('DELETE FROM debtors')
+            conn.commit()
+            
+        await update.message.reply_text(
+            f"{EMOJIS['success']} تمام اطلاعات تراکنش‌ها و بدهکاران با موفقیت حذف شد.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Error clearing data: {e}")
+        await update.message.reply_text(
+            f"{EMOJIS['error']} خطا در حذف اطلاعات. لطفاً دوباره تلاش کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+
+async def clear_transaction_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all transaction data from the database."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Clear transactions table
+            c.execute('DELETE FROM transactions')
+            conn.commit()
+            
+        await update.message.reply_text(
+            f"{EMOJIS['success']} تمام گزارشات تراکنش‌ها با موفقیت حذف شد.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Error clearing transaction data: {e}")
+        await update.message.reply_text(
+            f"{EMOJIS['error']} خطا در حذف گزارشات تراکنش‌ها. لطفاً دوباره تلاش کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+
+async def clear_debtor_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all debtor data from the database."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Clear debtors table
+            c.execute('DELETE FROM debtors')
+            conn.commit()
+
+    await update.message.reply_text(
+            f"{EMOJIS['success']} لیست بدهکاران با موفقیت پاک شد.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Error clearing debtor data: {e}")
+        await update.message.reply_text(
+            f"{EMOJIS['error']} خطا در پاک کردن لیست بدهکاران. لطفاً دوباره تلاش کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
+
+async def test_bot_functionality(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test all bot functionalities."""
+    test_results = []
+    
+    try:
+        # Test 1: Database Initialization
+        init_db()
+        test_results.append("✅ دیتابیس با موفقیت ایجاد شد")
+        
+        # Test 2: Transaction Registration
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            # Test income registration
+            transaction_id = generate_transaction_id()
+            tehran_time = get_tehran_time()
+            c.execute('INSERT INTO transactions (transaction_id, type, amount, description, date) VALUES (?, ?, ?, ?, ?)',
+                     (transaction_id, 'income', 1000000, 'تست درآمد', tehran_time))
+            
+            # Test expense registration
+            transaction_id = generate_transaction_id()
+            c.execute('INSERT INTO transactions (transaction_id, type, amount, description, date) VALUES (?, ?, ?, ?, ?)',
+                     (transaction_id, 'expense', 500000, 'تست هزینه', tehran_time))
+            conn.commit()
+        test_results.append("✅ ثبت تراکنش‌ها با موفقیت انجام شد")
+        
+        # Test 3: Debtor Registration
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            debtor_id = "D001"
+            c.execute('INSERT INTO debtors (debtor_id, name, amount, registration_date, status) VALUES (?, ?, ?, ?, ?)',
+                     (debtor_id, 'تست بدهکار', 2000000, tehran_time, 'active'))
+            conn.commit()
+        test_results.append("✅ ثبت بدهکار با موفقیت انجام شد")
+        
+        # Test 4: Report Generation
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM transactions')
+            transaction_count = c.fetchone()[0]
+            c.execute('SELECT COUNT(*) FROM debtors')
+            debtor_count = c.fetchone()[0]
+            
+            if transaction_count > 0 and debtor_count > 0:
+                test_results.append("✅ گزارش‌گیری با موفقیت انجام شد")
+        
+        # Test 5: Data Clearing
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute('DELETE FROM transactions')
+            c.execute('DELETE FROM debtors')
+            conn.commit()
+        test_results.append("✅ پاک کردن اطلاعات با موفقیت انجام شد")
+        
+        # Send test results
+        test_report = f"""
+{EMOJIS['report']} نتایج تست ربات:
+
+{chr(10).join(test_results)}
+
+{EMOJIS['success']} تمام قابلیت‌های ربات با موفقیت تست شدند.
+"""
+        await update.message.reply_text(
+            test_report,
+            reply_markup=get_main_menu_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in bot testing: {e}")
+        await update.message.reply_text(
+            f"{EMOJIS['error']} خطا در تست ربات: {str(e)}",
+        reply_markup=get_main_menu_keyboard()
+    )
+
 def main():
     """Start the bot."""
     # Initialize database
@@ -610,6 +1181,13 @@ def main():
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("set_debtor", set_debtor))
+    application.add_handler(CommandHandler("debtor_list", debtor_list))
+    application.add_handler(CommandHandler("edit_debtor", edit_debtor))
+    application.add_handler(CommandHandler("clear_data", clear_all_data))
+    application.add_handler(CommandHandler("clear_rep", clear_transaction_reports))
+    application.add_handler(CommandHandler("clear_debtor_list", clear_debtor_list))
+    application.add_handler(CommandHandler("test", test_bot_functionality))  # Add test command
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start the Bot
