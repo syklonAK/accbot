@@ -124,6 +124,26 @@ def generate_transaction_id():
         logger.error(f"Error generating transaction ID: {e}")
         return f"{random.choice(string.ascii_lowercase)}{random.randint(1, 999):03d}"
 
+def generate_debtor_id():
+    """Generate a unique debtor ID with format: D + 3 digits (e.g., D001)."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute('SELECT debtor_id FROM debtors ORDER BY id DESC LIMIT 1')
+            last_id = c.fetchone()
+            if last_id:
+                last_number = int(last_id[0][1:])
+                new_number = last_number + 1
+            else:
+                new_number = 1
+            return f"D{new_number:03d}"
+    except sqlite3.OperationalError:
+        init_db()
+        return "D001"
+    except Exception as e:
+        logger.error(f"Error generating debtor ID: {e}")
+        return f"D{random.randint(1, 999):03d}"
+
 def get_description_keyboard():
     """Get keyboard with skip button for description."""
     keyboard = [
@@ -1125,7 +1145,7 @@ async def test_bot_functionality(update: Update, context: ContextTypes.DEFAULT_T
         # Test 3: Debtor Registration
         with get_db_connection() as conn:
             c = conn.cursor()
-            debtor_id = "D001"
+            debtor_id = generate_debtor_id()  # Use unique debtor_id
             c.execute('INSERT INTO debtors (debtor_id, name, amount, registration_date, status) VALUES (?, ?, ?, ?, ?)',
                      (debtor_id, 'تست بدهکار', 2000000, tehran_time, 'active'))
             conn.commit()
