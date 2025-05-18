@@ -2,13 +2,27 @@
 
 A Telegram bot for managing personal accounting with an intuitive button-based interface.
 
-## Features
+## Version 1.0.0
 
+### Features
 - Record income and expenses
 - View transaction reports
 - Edit existing transactions
 - User-friendly button interface
 - SQLite database for data persistence
+- Persian language interface
+- Beautiful emoji-enhanced UI
+- 2x2 button layout for better organization
+
+### Changelog
+#### v1.0.0 (Initial Release)
+- Basic accounting functionality
+- Persian language support
+- Emoji-enhanced interface
+- Transaction recording and reporting
+- SQLite database integration
+- User-friendly error handling
+- Formatted amount and date display
 
 ## Setup
 
@@ -45,4 +59,12 @@ python bot.py
 
 ## Database
 
-The bot uses SQLite to store transactions in a local database file (`accounting.db`). The database is automatically created when you first run the bot. 
+The bot uses SQLite to store transactions in a local database file (`accounting.db`). The database is automatically created when you first run the bot.
+
+## Future Plans
+- Transaction editing and deletion
+- Export reports to PDF/Excel
+- Category management
+- Date-based filtering
+- Multi-user support
+- Backup/restore functionality 
